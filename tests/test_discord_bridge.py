@@ -144,6 +144,8 @@ class DiscordConfigTests(unittest.TestCase):
             "app.shutil.which", return_value="/usr/bin/codex"
         ), mock.patch(
             "app._default_state_dir", return_value=state_dir
+        ), mock.patch.object(
+            Path, "home", side_effect=RuntimeError("home is intentionally unavailable")
         ):
             config = app.Config.from_env()
 

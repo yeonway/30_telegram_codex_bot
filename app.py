@@ -138,9 +138,12 @@ class Config:
             )
         ).expanduser()
         codex_binary = _resolve_executable(os.environ.get("CODEX_BINARY", "codex"))
-        codex_home = Path(
-            os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
-        ).expanduser()
+        configured_codex_home = os.environ.get("CODEX_HOME", "").strip()
+        codex_home = (
+            Path(configured_codex_home).expanduser()
+            if configured_codex_home
+            else Path.home() / ".codex"
+        )
         timeout = _bounded_int("CODEX_TIMEOUT_SECONDS", 3600, 60, 14_400)
         poll_timeout = _bounded_int("TELEGRAM_POLL_TIMEOUT_SECONDS", 30, 5, 50)
         max_concurrent = _bounded_int("CODEX_MAX_CONCURRENT_SESSIONS", 5, 1, 10)
