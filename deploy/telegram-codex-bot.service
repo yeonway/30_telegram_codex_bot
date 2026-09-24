@@ -1,0 +1,31 @@
+[Unit]
+Description=Private Telegram Codex Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=user
+Group=user
+WorkingDirectory=/home/user/Raspberry_Pi/30_telegram_codex_bot
+EnvironmentFile=/etc/telegram-codex-bot.env
+Environment=HOME=/home/user
+Environment=CODEX_HOME=/home/user/.codex
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/telegram-codex-bot/venv/bin/python /srv/telegram-codex-bot/app.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=50
+KillMode=mixed
+StateDirectory=telegram-codex-bot
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=false
+# Keep service-level sandboxing disabled because the confirmed root modes must
+# be able to invoke the dedicated sudo runner. Ordinary Codex jobs apply no-new-privs
+# and their own read-only/workspace sandbox in app.py.
+
+[Install]
+WantedBy=multi-user.target
+

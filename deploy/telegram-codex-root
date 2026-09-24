@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+codex_home=/var/lib/telegram-codex-root
+install -d -o root -g root -m 700 "$codex_home"
+
+install -o root -g root -m 600 /home/user/.codex/auth.json "$codex_home/auth.json"
+if [ -f /home/user/.codex/config.toml ]; then
+    install -o root -g root -m 600 /home/user/.codex/config.toml "$codex_home/config.toml"
+fi
+
+# Saved Codex rollout data must outlive an individual root invocation for
+# Discord's per-session conversation resume. The directory is root-only; the
+# service user can neither read its authentication copy nor its local history.
+
+unset TELEGRAM_BOT_TOKEN TELEGRAM_PAIR_CODE_SHA256
+unset DISCORD_BOT_TOKEN DISCORD_ALLOWED_USER_ID DISCORD_ALLOWED_CHANNEL_ID
+export HOME=/root
+export CODEX_HOME="$codex_home"
+export PATH=/usr/local/bin:/usr/bin:/bin
+export LANG=C.UTF-8
+/usr/local/bin/codex "$@"

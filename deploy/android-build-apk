@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Bounded Android/Gradle build entry point for Codex jobs on the Raspberry Pi.
+set -euo pipefail
+
+project_root=/home/user/Raspberry_Pi
+android_sdk=/opt/android-sdk
+java_home=/usr/lib/jvm/java-17-openjdk-arm64
+gradle_home=/var/cache/telegram-codex-bot/gradle
+lock_file=/var/lock/telegram-codex-android-build.lock
+aapt2_override=${ANDROID_AAPT2_OVERRIDE:-/opt/android-build-tools-arm64/35.0.1/aapt2}
+
+usage() {
+  echo "usage: android-build-apk <project-or-relative-path> [gradle-task]" >&2
+  exit 2
+}
+
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage
+requested=$1
+task=${2:-assembleDebug}
+case "$task" in
+  *[!A-Za-z0-9:_-]*|'') echo "invalid Gradle task" >&2; exit 2 ;;
+esac
+
+target="$(realpath -e -- "$project_root/$requested")"
+case "$target/" in
+  "$project_root"/*/) ;;
+  *) echo "project must stay under $project_root" >&2; exit 2 ;;
+esac
+[ -f "$target/gradlew" ] || { echo "gradlew not found: $target" >&2; exit 2; }
+[ -x "$java_home/bin/java" ] || { echo "JDK 17 not found" >&2; exit 2; }
+[ -d "$android_sdk/platforms" ] || { echo "Android SDK not found" >&2; exit 2; }
+[ -x "$aapt2_override" ] || { echo "Native ARM64 AAPT2 is not installed: $aapt2_override" >&2; exit 2; }
+
+exec 9>"$lock_file"
+if ! flock -w 30 9; then
+  echo "another Android build is already running" >&2
+  exit 75
+fi
+
+local_properties="$target/local.properties"
+backup=""
+had_properties=0
+cleanup() {
+  if [ "$had_properties" -eq 1 ] && [ -n "$backup" ] && [ -f "$backup" ]; then
+    cp -p -- "$backup" "$local_properties"
+    rm -f -- "$backup"
+  elif [ "$had_properties" -eq 0 ]; then
+    rm -f -- "$local_properties"
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+if [ -f "$local_properties" ]; then
+  had_properties=1
+  backup="$(mktemp "$target/.local.properties.codex.XXXXXX")"
+  cp -p -- "$local_properties" "$backup"
+  awk '!/^sdk\.dir=/' "$local_properties" >"$local_properties.codex.tmp"
+  printf 'sdk.dir=%s\n' "$android_sdk" >>"$local_properties.codex.tmp"
+  mv -- "$local_properties.codex.tmp" "$local_properties"
+else
+  printf 'sdk.dir=%s\n' "$android_sdk" >"$local_properties"
+fi
+
+export JAVA_HOME="$java_home"
+export ANDROID_HOME="$android_sdk"
+export ANDROID_SDK_ROOT="$android_sdk"
+export GRADLE_USER_HOME="$gradle_home"
+export GRADLE_OPTS="-Dorg.gradle.workers.max=2 -Dkotlin.compiler.execution.strategy=in-process -Xmx2048m"
+
+cd "$target"
+nice -n 5 ionice -c 2 -n 7 /bin/sh ./gradlew \
+  --no-daemon --no-parallel --console=plain \
+  -Pandroid.aapt2FromMavenOverride="$aapt2_override" "$task"
+
+mapfile -t apks < <(find "$target" -type f -path '*/build/outputs/apk/*.apk' -o -type f -path '*/build/outputs/apk/*/*.apk' | sort)
+[ "${#apks[@]}" -gt 0 ] || { echo "build completed but no APK was found" >&2; exit 1; }
+for apk in "${apks[@]}"; do
+  unzip -tqq "$apk"
+  printf 'ANDROID_BUILD_APK=%s\n' "$apk"
+  printf 'SIZE=%s\n' "$(stat -c %s "$apk")"
+  printf 'SHA256=%s\n' "$(sha256sum "$apk" | cut -d' ' -f1)"
+done

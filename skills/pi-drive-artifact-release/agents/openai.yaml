@@ -1,0 +1,3 @@
+interface:
+  display_name: "Pi Drive Artifact Release"
+  short_description: "Publish verified files to drive.dcout.cloud"

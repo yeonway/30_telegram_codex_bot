@@ -1,0 +1,3 @@
+interface:
+  display_name: "Pi Remote Codex Ops"
+  short_description: "Operate the Discord and Telegram relay safely"

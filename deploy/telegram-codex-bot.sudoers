@@ -1,0 +1,6 @@
+# Dedicated audited entry point for the Telegram bot's explicitly confirmed root modes.
+user ALL=(root) NOPASSWD: /usr/local/sbin/telegram-codex-root *
+# Controlled root entry point for backup, deploy, and restart of this bot only.
+user ALL=(root) NOPASSWD: /usr/local/sbin/telegram-codex-deploy
+# Publish only relay-validated artifact outbox files through the audited helper.
+user ALL=(root) NOPASSWD: /usr/local/sbin/telegram-codex-publish-artifact *

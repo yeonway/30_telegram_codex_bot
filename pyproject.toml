@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "private-codex-relay"
+version = "1.0.0"
+description = "Run Codex CLI securely from a private Telegram or Discord chat"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Codex Relay contributors"}]
+keywords = ["codex", "telegram", "discord", "automation"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Chat",
+]
+dependencies = ["discord.py>=2.4,<3"]
+
+[project.scripts]
+codex-relay = "app:main"
+codex-relay-setup = "setup_relay:main"
+
+[project.urls]
+Homepage = "https://github.com/yeonway/30_telegram_codex_bot"
+Issues = "https://github.com/yeonway/30_telegram_codex_bot/issues"
+
+[tool.setuptools]
+py-modules = [
+  "app",
+  "artifact_delivery",
+  "codex_progress",
+  "discord_bridge",
+  "discord_controls",
+  "relay_errors",
+  "setup_relay",
+]

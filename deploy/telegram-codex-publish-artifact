@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Publish one validated relay artifact with backup, lock, and public hash proof."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import sys
+import tempfile
+import unicodedata
+import urllib.request
+import zipfile
+from pathlib import Path
+
+
+OUTBOX_ROOT = Path("/var/lib/telegram-codex-bot/artifacts")
+SITE_ROOT = Path("/srv/drive-dcout-site")
+BACKUP_ROOT = Path("/srv/deploy-backups/telegram-codex-artifacts")
+PUBLIC_ROOT = "https://drive.dcout.cloud"
+MAX_BYTES = 512 * 1024 * 1024
+ALLOWED_FILE_SUFFIXES = {
+    ".apk", ".aab", ".exe", ".zip", ".txt", ".log", ".json", ".md",
+    ".csv", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".mp3", ".mp4",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", required=True)
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--description", default="")
+    parser.add_argument("--publish-as", choices=("file", "release"), default="file")
+    parser.add_argument("--app-name")
+    parser.add_argument("--version")
+    return parser.parse_args()
+
+
+def safe_part(value: str, fallback: str) -> str:
+    value = unicodedata.normalize("NFKC", value).strip().lower()
+    value = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", value)
+    value = re.sub(r"\s+", "-", value)
+    value = re.sub(r"[^0-9a-zA-Z\uac00-\ud7a3._-]+", "-", value)
+    return (re.sub(r"-+", "-", value).strip("-._") or fallback)[:80]
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_list(path: Path) -> list[dict]:
+    data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else []
+    if not isinstance(data, list):
+        raise ValueError(f"{path.name} must contain a JSON array")
+    return data
+
+
+def atomic_json(path: Path, data: list[dict]) -> None:
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def verify_public(url: str, expected_size: int, expected_sha: str) -> None:
+    digest = hashlib.sha256()
+    size = 0
+    with urllib.request.urlopen(url, timeout=60) as response:
+        if response.status != 200:
+            raise RuntimeError(f"public download returned HTTP {response.status}")
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            digest.update(chunk)
+    if size != expected_size or digest.hexdigest() != expected_sha:
+        raise RuntimeError("public download size or SHA-256 mismatch")
+
+
+def main() -> int:
+    args = parse_args()
+    source = Path(args.source).resolve(strict=True)
+    root = OUTBOX_ROOT.resolve(strict=True)
+    try:
+        source.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("source is outside the relay artifact outbox") from exc
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or source.is_symlink():
+        raise ValueError("source must be a regular non-symlink file")
+    if info.st_size <= 0 or info.st_size > MAX_BYTES:
+        raise ValueError("source size is outside the allowed range")
+    suffix = source.suffix.lower()
+    if suffix not in ALLOWED_FILE_SUFFIXES:
+        raise ValueError(f"unsupported artifact extension: {suffix or '(none)'}")
+    title = " ".join(args.title.split())[:120]
+    description = " ".join(args.description.split())[:500]
+    if not title:
+        raise ValueError("title is required")
+    if args.publish_as == "release":
+        if suffix not in {".apk", ".exe"}:
+            raise ValueError("release artifacts must be APK or EXE files")
+        if not args.app_name or not args.version or not description:
+            raise ValueError("release publication requires app name, version, and description")
+    if suffix == ".apk":
+        with zipfile.ZipFile(source) as archive:
+            if archive.testzip() is not None:
+                raise ValueError("APK ZIP integrity check failed")
+
+    lock_path = SITE_ROOT / ".telegram-codex-artifact.lock"
+    SITE_ROOT.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        local_time = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+        digest = sha256(source)
+        if args.publish_as == "release":
+            inventory = SITE_ROOT / "apps.json"
+            destination_dir = SITE_ROOT / "downloads"
+            base = f"{safe_part(args.app_name, 'app')}-{stamp}-{safe_part(args.version, 'version')}{suffix}"
+        else:
+            inventory = SITE_ROOT / "files.json"
+            destination_dir = SITE_ROOT / "files"
+            base = f"{safe_part(source.stem, 'artifact')}-{stamp}-{digest[:10]}{suffix}"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / base
+        if destination.exists():
+            raise FileExistsError(f"destination already exists: {destination.name}")
+
+        BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+        backup_dir = Path(tempfile.mkdtemp(prefix=f"{stamp}-", dir=BACKUP_ROOT))
+        inventory_existed = inventory.exists()
+        if inventory_existed:
+            shutil.copy2(inventory, backup_dir / inventory.name)
+        entries = read_list(inventory)
+        temp = destination_dir / f".{base}.tmp-{os.getpid()}"
+        try:
+            shutil.copyfile(source, temp)
+            os.chmod(temp, 0o644)
+            if temp.stat().st_size != info.st_size or sha256(temp) != digest:
+                raise RuntimeError("staged artifact verification failed")
+            os.replace(temp, destination)
+            relative = f"/{destination_dir.name}/{destination.name}"
+            if args.publish_as == "release":
+                entries = [
+                    item for item in entries
+                    if not (item.get("name") == args.app_name and item.get("version") == args.version)
+                ]
+                entry = {
+                    "name": args.app_name,
+                    "version": args.version,
+                    "date": local_time,
+                    "description": description,
+                    "file": relative,
+                    "type": suffix.lstrip(".").upper(),
+                    "sha256": digest,
+                    "size": info.st_size,
+                }
+                entries.append(entry)
+                entries.sort(key=lambda item: (item.get("date", ""), item.get("name", "")), reverse=True)
+            else:
+                entry = {
+                    "title": title,
+                    "description": description,
+                    "date": local_time,
+                    "originalName": source.name,
+                    "file": relative,
+                    "size": info.st_size,
+                    "sha256": digest,
+                }
+                entries.append(entry)
+                entries.sort(key=lambda item: (item.get("date", ""), item.get("title", "")), reverse=True)
+            atomic_json(inventory, entries)
+            json.loads(inventory.read_text(encoding="utf-8"))
+            url = f"{PUBLIC_ROOT}{relative}"
+            verify_public(url, info.st_size, digest)
+        except Exception:
+            temp.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            backup = backup_dir / inventory.name
+            if backup.exists():
+                shutil.copy2(backup, inventory)
+            elif not inventory_existed:
+                inventory.unlink(missing_ok=True)
+            raise
+
+    output = {
+        "title": title,
+        "type": suffix.lstrip(".").upper() or "FILE",
+        "size": info.st_size,
+        "sha256": digest,
+        "url": url,
+        "backup": str(backup_dir),
+    }
+    print(json.dumps(output, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"artifact publish failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)
