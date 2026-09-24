@@ -137,6 +137,7 @@ class DiscordConfigTests(unittest.TestCase):
                 "BOT_PAIR_CODE_SHA256": "a" * 64,
                 "DISCORD_ALLOWED_USER_ID": "",
                 "CODEX_PROJECT_ROOT": "/projects",
+                "CODEX_HOME": str(state_dir / ".codex"),
             },
             clear=True,
         ), mock.patch.object(Path, "is_dir", return_value=True), mock.patch(
