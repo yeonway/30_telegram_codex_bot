@@ -129,6 +129,7 @@ class DiscordIntentTests(unittest.TestCase):
 
 class DiscordConfigTests(unittest.TestCase):
     def test_token_without_allowed_user_uses_pairing(self):
+        state_dir = Path.cwd()
         with mock.patch.dict(
             "os.environ",
             {
@@ -140,6 +141,8 @@ class DiscordConfigTests(unittest.TestCase):
             clear=True,
         ), mock.patch.object(Path, "is_dir", return_value=True), mock.patch(
             "app.shutil.which", return_value="/usr/bin/codex"
+        ), mock.patch(
+            "app._default_state_dir", return_value=state_dir
         ):
             config = app.Config.from_env()
 
